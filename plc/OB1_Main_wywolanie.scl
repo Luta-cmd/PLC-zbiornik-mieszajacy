@@ -1,0 +1,30 @@
+// =====================================================================
+// Przyklad wywolania FB_ZbiornikMieszajacy w OB1 (Main)
+// Wklej ponizszy fragment do istniejacego bloku "Main [OB1]" w SCL.
+// Wczesniej nalezy utworzyc instancje DB: "DB_ZbiornikMieszajacy"
+// jako instancje bloku FB_ZbiornikMieszajacy.
+// =====================================================================
+
+"DB_ZbiornikMieszajacy"(
+    // --- wejscia (podlacz realne adresy I / sygnaly HMI) ---
+    Start            := "HMI_Start",             // Bool - przycisk/bit ze zdalnej wizualizacji
+    Stop             := "HMI_Stop",               // Bool
+    Kasuj_Alarm      := "HMI_Kasuj_Alarm",        // Bool
+    Awaria_Zewn      := "IW_Awaria_Mieszadla",    // Bool - np. termik silnika
+    Poziom_Analog_In := "IW100",                  // Int - wejscie analogowe (czujnik poziomu)
+    Poziom_Zadany    := "HMI_Poziom_Zadany",      // Real - nastawa z panelu operatorskiego
+    Czas_Mieszania   := T#15s,                    // Time - mozna tez podpiac zmienna z HMI
+    Czas_Spustu      := T#10s,
+
+    // --- wyjscia (podlacz realne adresy Q) ---
+    Zawor_Dozujacy_AO => "QW100",                 // Int -> modul AO sterujacy zaworem
+    Pompa_Mieszajaca  => "Q0.0",
+    Zawor_Spustowy    => "Q0.1",
+    Lampka_Alarm      => "Q0.2",
+    Lampka_Praca      => "Q0.3",
+    Licznik_Cykli     => "HMI_Licznik_Cykli",
+    Stan_Procesu      => "HMI_Stan_Procesu",
+    Poziom_Procent    => "HMI_Poziom_Procent",
+    Srednia_Poziomu   => "HMI_Srednia_Poziomu",
+    Serwis_Wymagany   => "HMI_Serwis_Wymagany"
+);

@@ -1,0 +1,215 @@
+// =====================================================================
+// PROJEKT: Automatyczny zbiornik mieszający (dozowanie / mieszanie / spust)
+// TIA Portal - jezyk SCL
+// Blok: FB_ZbiornikMieszajacy
+//
+// Zawiera:
+//  1. Funkcje logiczne         -> AND / OR / NOT (warunki bezpieczenstwa)
+//  2. Funkcje arytmetyczne     -> skalowanie AI, regulacja proporcjonalna
+//  3. Instrukcje warunkowe     -> IF..THEN..ELSE, CASE (maszyna stanow)
+//  4. Petle                    -> FOR (przesuwanie tablicy historii, srednia)
+//  5. Timery                   -> TON (czas mieszania, czas spustu)
+//  6. Liczniki                 -> CTU (licznik cykli), CTD (licznik serwisowy)
+//  7. Zawor analogowy          -> wyjscie AO sterowane proporcjonalnie
+//  8. Detekcja zboczy          -> R_TRIG (Start), F_TRIG (Stop)
+// =====================================================================
+
+FUNCTION_BLOCK "FB_ZbiornikMieszajacy"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+
+VAR_INPUT
+    Start               : Bool;                 // przycisk Start
+    Stop                : Bool;                 // przycisk Stop
+    Kasuj_Alarm         : Bool;                 // reset alarmu
+    Awaria_Zewn         : Bool;                 // sygnal awarii z instalacji (np. brak zasilania mieszadla)
+    Poziom_Analog_In    : Int;                  // surowy sygnal AI z czujnika poziomu (0..27648)
+    Poziom_Zadany       : Real;                 // wartosc zadana poziomu w % (0..100)
+    Czas_Mieszania      : Time := T#10s;        // nastawa czasu mieszania
+    Czas_Spustu         : Time := T#8s;         // nastawa czasu spustu
+END_VAR
+
+VAR_OUTPUT
+    Zawor_Dozujacy_AO   : Int;                  // wyjscie analogowe do zaworu dozujacego (0..27648)
+    Pompa_Mieszajaca    : Bool;
+    Zawor_Spustowy      : Bool;
+    Lampka_Alarm        : Bool;
+    Lampka_Praca        : Bool;
+    Licznik_Cykli       : Int;                  // liczba wykonanych batchow
+    Stan_Procesu        : Int;                  // 0-Idle,1-Napelnianie,2-Mieszanie,3-Spust,4-Zakonczono
+    Poziom_Procent      : Real;                 // poziom przeliczony na %
+    Srednia_Poziomu     : Real;                 // srednia z ostatnich 10 probek
+    Serwis_Wymagany     : Bool;                 // sygnal do przegladu po serii awarii
+END_VAR
+
+VAR
+    // ---- 8. Detekcja zboczy ----
+    Start_Trig          : R_TRIG;
+    Stop_Trig           : F_TRIG;
+
+    // ---- 5. Timery ----
+    Timer_Mieszania     : TON;
+    Timer_Spustu        : TON;
+
+    // ---- 6. Liczniki ----
+    Licznik_Batch       : CTU;
+    Licznik_Serwis      : CTD;
+
+    // ---- pomocnicze do logiki / regulacji ----
+    Zezwolenie_Start    : Bool;
+    Blad_Awarii         : Bool;
+    Blad_Regulacji      : Real;
+    Wzmocnienie         : Real := 5.0;          // wzmocnienie regulatora P
+    Otwarcie_Procent    : Real;
+
+    // ---- 4. tablica do petli / historia poziomu ----
+    Historia_Poziomu    : Array[1..10] of Real;
+    i                   : Int;
+    Suma_Pom            : Real;
+
+    Poziom_Max          : Real := 95.0;         // % - alarm przepelnienia
+    Poziom_Min          : Real := 5.0;          // % - poziom minimalny
+END_VAR
+
+// =====================================================================
+// CIALO BLOKU
+// =====================================================================
+
+// ---------------------------------------------------------------
+// 8. DETEKCJA ZBOCZY - impuls narastajacy na Start, opadajacy na Stop
+// ---------------------------------------------------------------
+#Start_Trig(CLK := #Start);
+#Stop_Trig(CLK := #Stop);
+
+// ---------------------------------------------------------------
+// 2. F. ARYTMETYCZNE - skalowanie sygnalu analogowego 0..27648 -> 0..100%
+// ---------------------------------------------------------------
+#Poziom_Procent := (Int_To_Real(#Poziom_Analog_In) * 100.0) / 27648.0;
+
+// ---------------------------------------------------------------
+// 4. PETLA FOR - przesuniecie probek w tablicy historii (bufor kolejkowy)
+// ---------------------------------------------------------------
+FOR #i := 10 DOWNTO 2 DO
+    #Historia_Poziomu[#i] := #Historia_Poziomu[#i - 1];
+END_FOR;
+#Historia_Poziomu[1] := #Poziom_Procent;
+
+// 4. PETLA FOR - obliczenie sredniej z 10 ostatnich probek (f. arytmetyczne + petla)
+#Suma_Pom := 0.0;
+FOR #i := 1 TO 10 DO
+    #Suma_Pom := #Suma_Pom + #Historia_Poziomu[#i];
+END_FOR;
+#Srednia_Poziomu := #Suma_Pom / 10.0;
+
+// ---------------------------------------------------------------
+// 1. F. LOGICZNE - warunki bezpieczenstwa i zezwolenia na start
+// ---------------------------------------------------------------
+#Blad_Awarii := #Awaria_Zewn OR (#Poziom_Procent > #Poziom_Max);
+
+#Zezwolenie_Start := NOT #Blad_Awarii
+                 AND (#Poziom_Procent < #Poziom_Max)
+                 AND NOT #Stop;
+
+IF #Kasuj_Alarm THEN
+    #Blad_Awarii := FALSE;
+END_IF;
+
+#Lampka_Alarm := #Blad_Awarii;
+
+// reakcja na zbocze opadajace Stop -> natychmiastowy powrot do IDLE
+IF #Stop_Trig.Q THEN
+    #Stan_Procesu       := 0;
+    #Pompa_Mieszajaca   := FALSE;
+    #Zawor_Spustowy     := FALSE;
+    #Zawor_Dozujacy_AO  := 0;
+END_IF;
+
+// ---------------------------------------------------------------
+// 3. INSTRUKCJE WARUNKOWE - maszyna stanow procesu (CASE)
+// ---------------------------------------------------------------
+CASE #Stan_Procesu OF
+
+    0:  // IDLE - oczekiwanie na start
+        #Lampka_Praca      := FALSE;
+        #Pompa_Mieszajaca  := FALSE;
+        #Zawor_Spustowy    := FALSE;
+        #Zawor_Dozujacy_AO := 0;
+
+        IF #Start_Trig.Q AND #Zezwolenie_Start THEN
+            #Stan_Procesu := 1;
+        END_IF;
+
+    1:  // NAPELNIANIE - 7. ZAWOR ANALOGOWY, regulacja proporcjonalna (P)
+        #Lampka_Praca := TRUE;
+        #Blad_Regulacji := #Poziom_Zadany - #Poziom_Procent;
+
+        IF #Blad_Regulacji > 0.0 THEN
+            #Otwarcie_Procent := #Blad_Regulacji * #Wzmocnienie;
+        ELSE
+            #Otwarcie_Procent := 0.0;
+        END_IF;
+
+        // ograniczenie zakresu 0-100%
+        IF #Otwarcie_Procent > 100.0 THEN
+            #Otwarcie_Procent := 100.0;
+        ELSIF #Otwarcie_Procent < 0.0 THEN
+            #Otwarcie_Procent := 0.0;
+        END_IF;
+
+        #Zawor_Dozujacy_AO := Real_To_Int((#Otwarcie_Procent * 27648.0) / 100.0);
+
+        IF #Poziom_Procent >= #Poziom_Zadany THEN
+            #Zawor_Dozujacy_AO := 0;
+            #Stan_Procesu := 2;
+        END_IF;
+
+        IF #Blad_Awarii THEN
+            #Zawor_Dozujacy_AO := 0;
+            #Stan_Procesu := 0;
+        END_IF;
+
+    2:  // MIESZANIE - 5. TIMER TON
+        #Pompa_Mieszajaca := TRUE;
+        #Timer_Mieszania(IN := TRUE, PT := #Czas_Mieszania);
+
+        IF #Timer_Mieszania.Q THEN
+            #Timer_Mieszania(IN := FALSE, PT := #Czas_Mieszania);
+            #Pompa_Mieszajaca := FALSE;
+            #Stan_Procesu := 3;
+        END_IF;
+
+        IF #Blad_Awarii THEN
+            #Pompa_Mieszajaca := FALSE;
+            #Timer_Mieszania(IN := FALSE, PT := #Czas_Mieszania);
+            #Stan_Procesu := 0;
+        END_IF;
+
+    3:  // SPUST - 5. TIMER TON
+        #Zawor_Spustowy := TRUE;
+        #Timer_Spustu(IN := TRUE, PT := #Czas_Spustu);
+
+        IF #Timer_Spustu.Q THEN
+            #Timer_Spustu(IN := FALSE, PT := #Czas_Spustu);
+            #Zawor_Spustowy := FALSE;
+            #Stan_Procesu := 4;
+        END_IF;
+
+    4:  // ZAKONCZONO - 6. LICZNIK CTU zlicza wykonany cykl (batch)
+        #Licznik_Batch(CU := TRUE, R := FALSE, PV := 9999);
+        #Licznik_Cykli := #Licznik_Batch.CV;
+        #Lampka_Praca  := FALSE;
+        #Stan_Procesu  := 0;
+
+    ELSE
+        #Stan_Procesu := 0;
+
+END_CASE;
+
+// ---------------------------------------------------------------
+// 6. LICZNIK CTD - odliczanie do przegladu serwisowego
+// (kazda awaria zmniejsza licznik, reset po przegladzie/kasowaniu)
+// ---------------------------------------------------------------
+#Licznik_Serwis(CD := #Blad_Awarii, LD := #Kasuj_Alarm, PV := 5);
+#Serwis_Wymagany := #Licznik_Serwis.Q;
+
+END_FUNCTION_BLOCK
