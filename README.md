@@ -37,22 +37,6 @@ plc-zbiornik-mieszajacy/
 └── README.md
 ```
 
-## Jak uruchomić program w TIA Portal
-
-1. W drzewie projektu: *Program blocks* → prawy klawisz → **External source files** → *Add new external file* → wskaż `plc/FB_ZbiornikMieszajacy.scl`.
-2. Prawy klawisz na dodanym pliku → **Generate blocks from source**.
-3. Utwórz instancję DB bloku `FB_ZbiornikMieszajacy`.
-4. W bloku `Main [OB1]` dodaj wywołanie na wzór `plc/OB1_Main_wywolanie.scl`, podmieniając adresy I/O na własne.
-5. Do testów bez fizycznego sterownika: **Online → Start simulation** (PLCSIM) i podgląd wartości na tabeli obserwacyjnej (Watch Table) lub bezpośrednio na bloku wywołania w trybie monitoringu.
-
-## Sprawozdanie
-
-Sprawozdanie znajduje się w `sprawozdanie/main.tex` (źródło do edycji na [Overleaf](https://www.overleaf.com/)) oraz jako gotowy `sprawozdanie/sprawozdanie_podglad.pdf`.
-
-Aby skompilować samodzielnie:
-1. Wgraj całą zawartość folderu `sprawozdanie/` jako nowy projekt na Overleaf.
-2. Dodaj plik logo `image.png` (np. logo uczelni) do głównego katalogu projektu — jest używany jako znak wodny na stronie tytułowej.
-3. Skompiluj `main.tex` (pdfLaTeX).
 
 ## Autor
 
